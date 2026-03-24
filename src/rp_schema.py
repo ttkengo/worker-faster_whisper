@@ -1,4 +1,9 @@
 INPUT_VALIDATIONS = {
+    'youtube_url': {
+        'type': str,
+        'required': False,
+        'default': None
+    },
     'audio': {
         'type': str,
         'required': False,
