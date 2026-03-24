@@ -51,3 +51,6 @@ COPY test_input.json .
 
 # Set default command
 CMD python -u /rp_handler.py
+
+#
+RUN pip install yt-dlp
