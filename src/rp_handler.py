@@ -36,27 +36,24 @@ def youtube_to_tempfile(youtube_url: str) -> str:
     return audio_path
 
 def segment_and_translate_with_openai(all_words, openai_api_key):
-    """
-    App.jsと同じロジック：OpenAIで文境界検出＋日本語翻訳
-    """
-    word_list_text = ' '.join([f"{i}:{w['word']}" for i, w in enumerate(all_words)])
+    word_list_text = ' '.join([str(i) + ':' + w['word'] for i, w in enumerate(all_words)])
 
-    prompt = f"""以下は英語動画の単語リストです（インデックス:単語 の形式）。
-自然な文の区切りを検出してください。1文は通常10〜30単語程度です。
-ピリオド・疑問符・感嘆符がある場合は必ずそこで区切る。ない場合も文脈から判断する。
-絶対に複数の文をひとつにまとめないこと。
-
-単語リスト:
-{word_list_text}
-
-以下のJSON形式のみで返してください:
-{{"segments":[{{"start":0,"end":8,"translation":"日本語訳"}},{{"start":9,"end":15,"translation":"日本語訳"}},...]}}}
-
-ルール:
-- startとendは単語インデックス（inclusive、0始まり）
-- 全単語を必ずいずれかのsegmentに含める（漏れなし）
-- translationはstart〜endの単語群の自然な日本語訳
-- 1つのsegmentに複数の文を入れない"""
+    prompt = (
+        "Below is a list of words from an English video (format: index:word).\n"
+        "Detect natural sentence boundaries. Each sentence is typically 10-30 words.\n"
+        "Always split at periods, question marks, or exclamation marks. Otherwise use context.\n"
+        "Never combine multiple sentences into one segment.\n\n"
+        "Word list:\n"
+        + word_list_text
+        + "\n\n"
+        "Return ONLY the following JSON format:\n"
+        '{"segments":[{"start":0,"end":8,"translation":"Japanese translation here"},{"start":9,"end":15,"translation":"Japanese translation here"}]}\n\n'
+        "Rules:\n"
+        "- start and end are word indices (inclusive, 0-based)\n"
+        "- Every word must be included in exactly one segment\n"
+        "- translation is a natural Japanese translation of words from start to end\n"
+        "- Never put multiple sentences in one segment"
+    )
 
     payload = json.dumps({
         "model": "gpt-4o-mini",
@@ -70,7 +67,7 @@ def segment_and_translate_with_openai(all_words, openai_api_key):
         data=payload,
         headers={
             "Content-Type": "application/json",
-            "Authorization": f"Bearer {openai_api_key}",
+            "Authorization": "Bearer " + openai_api_key,
         },
         method="POST",
     )
@@ -86,10 +83,7 @@ def segment_and_translate_with_openai(all_words, openai_api_key):
 
     return parsed
 
-def build_raw_and_processed(whisper_segments, openai_parsed, all_words):
-    """
-    App.jsのbuildProcessedFromRawと同じロジック
-    """
+def build_raw_and_processed(openai_parsed, all_words):
     processed = []
     for i, seg in enumerate(openai_parsed):
         start_idx = seg.get("start", 0)
@@ -109,7 +103,6 @@ def build_raw_and_processed(whisper_segments, openai_parsed, all_words):
             "translation": seg.get("translation", ""),
         })
 
-    # endを次のstartに統一
     for i in range(len(processed) - 1):
         processed[i]["end"] = processed[i + 1]["start"]
 
@@ -129,7 +122,6 @@ def run_whisper_job(job):
             return {"error": input_validation['errors']}
         job_input = input_validation['validated_input']
 
-    # OpenAI APIキーを環境変数から取得
     openai_api_key = os.environ.get("OPENAI_API_KEY", "")
     if not openai_api_key:
         return {"error": "OPENAI_API_KEY is not set"}
@@ -145,7 +137,6 @@ def run_whisper_job(job):
         return {'error': 'Must provide youtube_url, audio, or audio_base64'}
 
     with rp_debugger.LineTimer('transcription_step'):
-        # Whisperで文字起こし（単語タイムスタンプ付き）
         trans_result = MODEL.predict(
             audio=audio_input,
             model_name=job_input.get("model", "turbo"),
@@ -170,7 +161,6 @@ def run_whisper_job(job):
         )
 
     with rp_debugger.LineTimer('build_words_step'):
-        # 全単語リストを構築（App.jsと同じ形式）
         all_words = []
         for seg in trans_result['_segments']:
             if hasattr(seg, 'words') and seg.words:
@@ -180,7 +170,6 @@ def run_whisper_job(job):
                         "startMs": round(w.start * 1000),
                     })
             else:
-                # 単語タイムスタンプがない場合は比例配分
                 raw_words = seg.text.strip().split()
                 if not raw_words:
                     continue
@@ -193,15 +182,10 @@ def run_whisper_job(job):
                     })
 
     with rp_debugger.LineTimer('openai_step'):
-        # OpenAIで文境界検出＋日本語翻訳
         openai_parsed = segment_and_translate_with_openai(all_words, openai_api_key)
 
     with rp_debugger.LineTimer('build_step'):
-        raw, processed = build_raw_and_processed(
-            trans_result['_segments'],
-            openai_parsed,
-            all_words,
-        )
+        raw, processed = build_raw_and_processed(openai_parsed, all_words)
 
     with rp_debugger.LineTimer('cleanup_step'):
         rp_cleanup.clean(['input_objects'])
