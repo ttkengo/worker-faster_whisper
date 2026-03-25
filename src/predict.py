@@ -175,6 +175,7 @@ class Predictor:
             )
 
         results = {
+            "_segments": segments,
             "segments": serialize_segments(segments),
             "detected_language": info.language,
             "transcription": transcription_output,
