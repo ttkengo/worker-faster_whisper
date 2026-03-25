@@ -1,6 +1,9 @@
 import base64
 import tempfile
 import os
+import json
+import urllib.request
+import urllib.error
 import yt_dlp
 from rp_schema import INPUT_VALIDATIONS
 from runpod.serverless.utils import download_files_from_urls, rp_cleanup, rp_debugger
@@ -32,66 +35,87 @@ def youtube_to_tempfile(youtube_url: str) -> str:
     audio_path = os.path.join(tmp_dir, "audio.wav")
     return audio_path
 
-def build_raw_and_processed(trans_segments, ja_segments):
+def segment_and_translate_with_openai(all_words, openai_api_key):
     """
-    RepeatTubeのraw/processed形式に変換
-    raw: { parsed, allWords }
-    processed: segments配列
+    App.jsと同じロジック：OpenAIで文境界検出＋日本語翻訳
     """
-    # allWords：全単語リスト（単語タイムスタンプ付き）
-    allWords = []
-    word_to_seg = []  # 各単語がどのセグメントに属するか
-    for seg_idx, seg in enumerate(trans_segments):
-        if hasattr(seg, 'words') and seg.words:
-            for w in seg.words:
-                allWords.append({
-                    "word": w.word.strip(),
-                    "startMs": round(w.start * 1000),
-                })
-                word_to_seg.append(seg_idx)
+    word_list_text = ' '.join([f"{i}:{w['word']}" for i, w in enumerate(all_words)])
 
-    # parsed：文境界インデックス＋日本語訳
-    parsed = []
-    current_start = 0
-    for seg_idx, seg in enumerate(trans_segments):
-        # このセグメントに属する単語のインデックス範囲を計算
-        indices = [i for i, s in enumerate(word_to_seg) if s == seg_idx]
-        if not indices:
-            continue
-        end_idx = indices[-1]
+    prompt = f"""以下は英語動画の単語リストです（インデックス:単語 の形式）。
+自然な文の区切りを検出してください。1文は通常10〜30単語程度です。
+ピリオド・疑問符・感嘆符がある場合は必ずそこで区切る。ない場合も文脈から判断する。
+絶対に複数の文をひとつにまとめないこと。
 
-        # 日本語訳
-        translation = ""
-        if seg_idx < len(ja_segments):
-            translation = ja_segments[seg_idx].text.strip()
+単語リスト:
+{word_list_text}
 
-        parsed.append({
-            "start": current_start,
-            "end": end_idx,
-            "translation": translation,
-        })
-        current_start = end_idx + 1
+以下のJSON形式のみで返してください:
+{{"segments":[{{"start":0,"end":8,"translation":"日本語訳"}},{{"start":9,"end":15,"translation":"日本語訳"}},...]}}}
 
-    # processed：RepeatTubeが直接使う形式
+ルール:
+- startとendは単語インデックス（inclusive、0始まり）
+- 全単語を必ずいずれかのsegmentに含める（漏れなし）
+- translationはstart〜endの単語群の自然な日本語訳
+- 1つのsegmentに複数の文を入れない"""
+
+    payload = json.dumps({
+        "model": "gpt-4o-mini",
+        "messages": [{"role": "user", "content": prompt}],
+        "temperature": 0,
+        "response_format": {"type": "json_object"},
+    }).encode("utf-8")
+
+    req = urllib.request.Request(
+        "https://api.openai.com/v1/chat/completions",
+        data=payload,
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {openai_api_key}",
+        },
+        method="POST",
+    )
+
+    with urllib.request.urlopen(req) as res:
+        data = json.loads(res.read().decode("utf-8"))
+
+    content = data["choices"][0]["message"]["content"]
+    obj = json.loads(content)
+    parsed = obj.get("segments") or list(obj.values())[0]
+    if not isinstance(parsed, list):
+        raise ValueError("OpenAI response is not a list")
+
+    return parsed
+
+def build_raw_and_processed(whisper_segments, openai_parsed, all_words):
+    """
+    App.jsのbuildProcessedFromRawと同じロジック
+    """
     processed = []
-    for i, seg in enumerate(trans_segments):
-        translation = ""
-        if i < len(ja_segments):
-            translation = ja_segments[i].text.strip()
+    for i, seg in enumerate(openai_parsed):
+        start_idx = seg.get("start", 0)
+        end_idx = min(seg.get("end", start_idx), len(all_words) - 1)
+        start_word = all_words[start_idx] if start_idx < len(all_words) else None
+        end_word = all_words[end_idx] if end_idx < len(all_words) else None
+        if not start_word:
+            continue
+        start_ms = start_word["startMs"]
+        end_ms = end_word["startMs"] + 500 if end_word else start_ms + 2000
+        text = ' '.join([all_words[j]["word"] for j in range(start_idx, end_idx + 1)]).strip()
         processed.append({
             "index": i,
-            "start": round(seg.start, 3),
-            "end": round(seg.end, 3),
-            "text": seg.text.strip(),
-            "translation": translation,
+            "start": start_ms / 1000,
+            "end": end_ms / 1000,
+            "text": text,
+            "translation": seg.get("translation", ""),
         })
+
     # endを次のstartに統一
     for i in range(len(processed) - 1):
         processed[i]["end"] = processed[i + 1]["start"]
 
     raw = {
-        "parsed": parsed,
-        "allWords": allWords,
+        "parsed": openai_parsed,
+        "allWords": all_words,
     }
     return raw, processed
 
@@ -105,6 +129,11 @@ def run_whisper_job(job):
             return {"error": input_validation['errors']}
         job_input = input_validation['validated_input']
 
+    # OpenAI APIキーを環境変数から取得
+    openai_api_key = os.environ.get("OPENAI_API_KEY", "")
+    if not openai_api_key:
+        return {"error": "OPENAI_API_KEY is not set"}
+
     if job_input.get('youtube_url', False):
         audio_input = youtube_to_tempfile(job_input['youtube_url'])
     elif job_input.get('audio', False) and not job_input.get('audio_base64', False):
@@ -116,7 +145,7 @@ def run_whisper_job(job):
         return {'error': 'Must provide youtube_url, audio, or audio_base64'}
 
     with rp_debugger.LineTimer('transcription_step'):
-        # 英語文字起こし（単語タイムスタンプ付き）
+        # Whisperで文字起こし（単語タイムスタンプ付き）
         trans_result = MODEL.predict(
             audio=audio_input,
             model_name=job_input.get("model", "turbo"),
@@ -140,35 +169,38 @@ def run_whisper_job(job):
             word_timestamps=True,
         )
 
-    with rp_debugger.LineTimer('translation_step'):
-        # 日本語翻訳
-        ja_result = MODEL.predict(
-            audio=audio_input,
-            model_name=job_input.get("model", "turbo"),
-            transcription="plain_text",
-            translation="plain_text",
-            translate=True,
-            language="en",
-            temperature=job_input["temperature"],
-            best_of=job_input["best_of"],
-            beam_size=job_input["beam_size"],
-            patience=job_input["patience"],
-            length_penalty=job_input["length_penalty"],
-            suppress_tokens=job_input.get("suppress_tokens", "-1"),
-            initial_prompt=job_input["initial_prompt"],
-            condition_on_previous_text=job_input["condition_on_previous_text"],
-            temperature_increment_on_fallback=job_input["temperature_increment_on_fallback"],
-            compression_ratio_threshold=job_input["compression_ratio_threshold"],
-            logprob_threshold=job_input["logprob_threshold"],
-            no_speech_threshold=job_input["no_speech_threshold"],
-            enable_vad=job_input["enable_vad"],
-            word_timestamps=False,
-        )
+    with rp_debugger.LineTimer('build_words_step'):
+        # 全単語リストを構築（App.jsと同じ形式）
+        all_words = []
+        for seg in trans_result['_segments']:
+            if hasattr(seg, 'words') and seg.words:
+                for w in seg.words:
+                    all_words.append({
+                        "word": w.word.strip(),
+                        "startMs": round(w.start * 1000),
+                    })
+            else:
+                # 単語タイムスタンプがない場合は比例配分
+                raw_words = seg.text.strip().split()
+                if not raw_words:
+                    continue
+                seg_start_ms = round(seg.start * 1000)
+                seg_dur_ms = round((seg.end - seg.start) * 1000)
+                for wi, w in enumerate(raw_words):
+                    all_words.append({
+                        "word": w,
+                        "startMs": seg_start_ms + round(seg_dur_ms * wi / len(raw_words)),
+                    })
+
+    with rp_debugger.LineTimer('openai_step'):
+        # OpenAIで文境界検出＋日本語翻訳
+        openai_parsed = segment_and_translate_with_openai(all_words, openai_api_key)
 
     with rp_debugger.LineTimer('build_step'):
         raw, processed = build_raw_and_processed(
             trans_result['_segments'],
-            ja_result['_segments'],
+            openai_parsed,
+            all_words,
         )
 
     with rp_debugger.LineTimer('cleanup_step'):
