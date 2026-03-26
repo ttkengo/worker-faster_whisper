@@ -43,13 +43,14 @@ def save_all_words_to_firebase(video_id: str, all_words: list):
     url = (
         f"https://firestore.googleapis.com/v1/projects/{FIREBASE_PROJECT}"
         f"/databases/(default)/documents/transcripts/{video_id}"
-        f"?key={FIREBASE_API_KEY}"
+        f"?updateMask.fieldPaths=allWords&updateMask.fieldPaths=fetchedAt"
+        f"&key={FIREBASE_API_KEY}"
     )
-    from datetime import datetime, timezone
+    from datetime import datetime, timezone, timedelta
     payload = json.dumps({
         "fields": {
             "allWords":  {"stringValue": json.dumps(all_words)},
-            "fetchedAt": {"stringValue": datetime.now(timezone.utc).isoformat()},
+            "fetchedAt": {"stringValue": datetime.now(timezone(timedelta(hours=9))).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "+09:00"},
         }
     }).encode("utf-8")
     req = urllib.request.Request(url, data=payload, method="PATCH")
