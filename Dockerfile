@@ -55,8 +55,8 @@ RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
     apt-get clean -y && \
     rm -rf /var/lib/apt/lists/*
 
-# Install yt-dlp and PO Token provider for YouTube cookie bypass
-RUN pip install yt-dlp yt-dlp-get-pot-rustypipe
+# Install yt-dlp with EJS (n-challenge solver scripts) and PO Token provider
+RUN pip install "yt-dlp[default]" yt-dlp-get-pot-rustypipe
 
 # Download rustypipe-botguard binary (PO Token generator)
 RUN wget -q https://codeberg.org/ThetaDev/rustypipe-botguard/releases/download/v0.1.2/rustypipe-botguard-v0.1.2-x86_64-unknown-linux-gnu.tar.xz \
