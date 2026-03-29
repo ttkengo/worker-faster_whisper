@@ -49,9 +49,16 @@ COPY src .
 # test input that will be used when the container runs outside of runpod
 COPY test_input.json .
 
+# Install yt-dlp and PO Token provider for YouTube cookie bypass
+RUN pip install yt-dlp yt-dlp-get-pot-rustypipe
+
+# Download rustypipe-botguard binary (PO Token generator)
+RUN wget -q https://codeberg.org/ThetaDev/rustypipe-botguard/releases/download/v0.1.2/rustypipe-botguard-v0.1.2-x86_64-unknown-linux-gnu.tar.xz \
+    && tar -xf rustypipe-botguard-v0.1.2-x86_64-unknown-linux-gnu.tar.xz \
+    && mv rustypipe-botguard /usr/local/bin/rustypipe-botguard \
+    && chmod +x /usr/local/bin/rustypipe-botguard \
+    && rm rustypipe-botguard-v0.1.2-x86_64-unknown-linux-gnu.tar.xz
+
 # Set default command
 CMD python -u /rp_handler.py
-
-#
-RUN pip install yt-dlp
 
