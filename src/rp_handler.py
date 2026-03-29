@@ -22,7 +22,26 @@ try:
     _node_version = subprocess.check_output([_node_path or "node", "--version"], stderr=subprocess.DEVNULL).decode().strip() if _node_path else "not found"
 except Exception as e:
     _node_version = f"error: {e}"
-print(f"Node.js path: {_node_path}, version: {_node_version}")
+print(f"[diag] Node.js path: {_node_path}, version: {_node_version}")
+
+# yt-dlp-ejs内部診断
+try:
+    import yt_dlp_ejs
+    import os
+    pkg_dir = os.path.dirname(yt_dlp_ejs.__file__)
+    js_files = [f for f in os.listdir(pkg_dir) if f.endswith('.js')]
+    print(f"[diag] yt_dlp_ejs dir: {pkg_dir}")
+    print(f"[diag] yt_dlp_ejs JS files: {js_files}")
+    if js_files and _node_path:
+        script_path = os.path.join(pkg_dir, js_files[0])
+        r = subprocess.run(
+            [_node_path, script_path],
+            capture_output=True, text=True, timeout=10,
+            input='test'
+        )
+        print(f"[diag] node+ejs_script rc={r.returncode} out={r.stdout[:200]!r} err={r.stderr[:200]!r}")
+except Exception as e:
+    print(f"[diag] yt_dlp_ejs diagnostic error: {type(e).__name__}: {e}")
 
 FIREBASE_API_KEY = os.environ.get("FIREBASE_API_KEY", "")
 FIREBASE_PROJECT = os.environ.get("FIREBASE_PROJECT", "")
