@@ -49,6 +49,12 @@ COPY src .
 # test input that will be used when the container runs outside of runpod
 COPY test_input.json .
 
+# Install Node.js 20 (required for yt-dlp n-challenge solving)
+RUN curl -fsSL https://deb.nodesource.com/setup_20.x | bash - && \
+    apt-get install -y nodejs && \
+    apt-get clean -y && \
+    rm -rf /var/lib/apt/lists/*
+
 # Install yt-dlp and PO Token provider for YouTube cookie bypass
 RUN pip install yt-dlp yt-dlp-get-pot-rustypipe
 
