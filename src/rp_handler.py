@@ -56,7 +56,7 @@ def youtube_to_tempfile(youtube_url: str) -> str:
         "quiet": False,
         "verbose": True,
         "jsruntimes": [node_runtime],
-        "extractor_args": {"youtube": {"player_client": ["ios", "web"]}},
+        "extractor_args": {"youtube": {"player_client": ["android", "tv_embedded"]}},
     }
     if _cookies_file:
         ydl_opts["cookiefile"] = _cookies_file
