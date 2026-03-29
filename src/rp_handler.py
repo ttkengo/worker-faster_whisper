@@ -3,6 +3,8 @@ import tempfile
 import os
 import atexit
 import json
+import shutil
+import subprocess
 import urllib.request
 import yt_dlp
 from rp_schema import INPUT_VALIDATIONS
@@ -13,6 +15,14 @@ import predict
 
 MODEL = predict.Predictor()
 MODEL.setup()
+
+# Node.js診断
+_node_path = shutil.which("node") or shutil.which("nodejs")
+try:
+    _node_version = subprocess.check_output([_node_path or "node", "--version"], stderr=subprocess.DEVNULL).decode().strip() if _node_path else "not found"
+except Exception as e:
+    _node_version = f"error: {e}"
+print(f"Node.js path: {_node_path}, version: {_node_version}")
 
 FIREBASE_API_KEY = os.environ.get("FIREBASE_API_KEY", "")
 FIREBASE_PROJECT = os.environ.get("FIREBASE_PROJECT", "")
@@ -35,6 +45,7 @@ def base64_to_tempfile(base64_file: str) -> str:
 
 def youtube_to_tempfile(youtube_url: str) -> str:
     tmp_dir = tempfile.mkdtemp()
+    node_runtime = f"node:{_node_path}" if _node_path else "node"
     ydl_opts = {
         "format": "bestaudio/best",
         "outtmpl": os.path.join(tmp_dir, "audio.%(ext)s"),
@@ -44,6 +55,7 @@ def youtube_to_tempfile(youtube_url: str) -> str:
         }],
         "quiet": False,
         "verbose": True,
+        "jsruntimes": [node_runtime],
     }
     if _cookies_file:
         ydl_opts["cookiefile"] = _cookies_file
