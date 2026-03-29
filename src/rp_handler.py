@@ -16,32 +16,34 @@ import predict
 MODEL = predict.Predictor()
 MODEL.setup()
 
-# Node.js診断
+# 診断情報をグローバルに収集（ジョブのエラーレスポンスに含める）
+_diag = {}
+
 _node_path = shutil.which("node") or shutil.which("nodejs")
 try:
     _node_version = subprocess.check_output([_node_path or "node", "--version"], stderr=subprocess.DEVNULL).decode().strip() if _node_path else "not found"
 except Exception as e:
     _node_version = f"error: {e}"
-print(f"[diag] Node.js path: {_node_path}, version: {_node_version}")
+_diag["node_path"] = _node_path
+_diag["node_version"] = _node_version
+print(f"[diag] Node.js: {_node_path} {_node_version}")
 
-# yt-dlp-ejs内部診断
 try:
     import yt_dlp_ejs
-    import os
-    pkg_dir = os.path.dirname(yt_dlp_ejs.__file__)
-    js_files = [f for f in os.listdir(pkg_dir) if f.endswith('.js')]
-    print(f"[diag] yt_dlp_ejs dir: {pkg_dir}")
-    print(f"[diag] yt_dlp_ejs JS files: {js_files}")
+    import os as _os
+    pkg_dir = _os.path.dirname(yt_dlp_ejs.__file__)
+    js_files = [f for f in _os.listdir(pkg_dir) if f.endswith('.js')]
+    _diag["ejs_dir"] = pkg_dir
+    _diag["ejs_js_files"] = js_files
     if js_files and _node_path:
-        script_path = os.path.join(pkg_dir, js_files[0])
-        r = subprocess.run(
-            [_node_path, script_path],
-            capture_output=True, text=True, timeout=10,
-            input='test'
-        )
-        print(f"[diag] node+ejs_script rc={r.returncode} out={r.stdout[:200]!r} err={r.stderr[:200]!r}")
+        script_path = _os.path.join(pkg_dir, js_files[0])
+        r = subprocess.run([_node_path, script_path], capture_output=True, text=True, timeout=10, input='test')
+        _diag["ejs_node_rc"] = r.returncode
+        _diag["ejs_node_out"] = r.stdout[:300]
+        _diag["ejs_node_err"] = r.stderr[:300]
 except Exception as e:
-    print(f"[diag] yt_dlp_ejs diagnostic error: {type(e).__name__}: {e}")
+    _diag["ejs_error"] = f"{type(e).__name__}: {e}"
+print(f"[diag] ejs: {_diag}")
 
 FIREBASE_API_KEY = os.environ.get("FIREBASE_API_KEY", "")
 FIREBASE_PROJECT = os.environ.get("FIREBASE_PROJECT", "")
@@ -124,7 +126,10 @@ def run_whisper_job(job):
         job_input = input_validation['validated_input']
 
     if job_input.get('youtube_url', False):
-        audio_input = youtube_to_tempfile(job_input['youtube_url'])
+        try:
+            audio_input = youtube_to_tempfile(job_input['youtube_url'])
+        except Exception as e:
+            return {"error": str(e), "diag": _diag}
     elif job_input.get('audio', False) and not job_input.get('audio_base64', False):
         with rp_debugger.LineTimer('download_step'):
             audio_input = download_files_from_urls(job['id'], [job_input['audio']])[0]
