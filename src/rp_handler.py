@@ -1,6 +1,7 @@
 import base64
 import tempfile
 import os
+import atexit
 import json
 import urllib.request
 import yt_dlp
@@ -15,6 +16,17 @@ MODEL.setup()
 
 FIREBASE_API_KEY = os.environ.get("FIREBASE_API_KEY", "")
 FIREBASE_PROJECT = os.environ.get("FIREBASE_PROJECT", "")
+
+# YouTubeのcookiesをBase64環境変数から一時ファイルに展開
+_cookies_file = None
+_youtube_cookies_b64 = os.environ.get("YOUTUBE_COOKIES_B64", "")
+if _youtube_cookies_b64:
+    _cookies_tmp = tempfile.NamedTemporaryFile(suffix=".txt", delete=False, mode='wb')
+    _cookies_tmp.write(base64.b64decode(_youtube_cookies_b64))
+    _cookies_tmp.close()
+    _cookies_file = _cookies_tmp.name
+    atexit.register(os.unlink, _cookies_file)
+    print(f"YouTube cookies loaded: {_cookies_file}")
 
 def base64_to_tempfile(base64_file: str) -> str:
     with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as temp_file:
@@ -32,6 +44,8 @@ def youtube_to_tempfile(youtube_url: str) -> str:
         }],
         "quiet": True,
     }
+    if _cookies_file:
+        ydl_opts["cookiefile"] = _cookies_file
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.extract_info(youtube_url, download=True)
     return os.path.join(tmp_dir, "audio.wav")
