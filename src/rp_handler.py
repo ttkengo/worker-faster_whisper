@@ -39,19 +39,30 @@ try:
             all_files.append(_os.path.relpath(_os.path.join(root, f), pkg_dir))
     _diag["ejs_dir"] = pkg_dir
     _diag["ejs_all_files"] = all_files
-    # プラグインのスクリプトパス取得を試みる
-    try:
-        script_path = getattr(yt_dlp_ejs, 'SOLVER_SCRIPT', None) or getattr(yt_dlp_ejs, 'script_path', None)
-        _diag["ejs_script_path_attr"] = str(script_path)
-    except Exception as e2:
-        _diag["ejs_script_path_attr"] = f"error: {e2}"
-    # yt-dlp-ejsのentry_pointsを確認
+    # core.min.jsをnodeで直接実行テスト
+    core_js = _os.path.join(pkg_dir, 'yt', 'solver', 'core.min.js')
+    if _node_path and _os.path.exists(core_js):
+        r = subprocess.run([_node_path, core_js], capture_output=True, text=True, timeout=10, input='test')
+        _diag["core_js_rc"] = r.returncode
+        _diag["core_js_out"] = r.stdout[:300]
+        _diag["core_js_err"] = r.stderr[:300]
+    # 全entry_pointsグループを確認
     try:
         import importlib.metadata as _meta
-        eps = list(_meta.entry_points(group='yt_dlp_plugins'))
-        _diag["yt_dlp_plugins_eps"] = [str(e) for e in eps]
+        all_eps = {}
+        for ep in _meta.entry_points():
+            g = ep.group
+            if 'yt' in g.lower() or 'dlp' in g.lower() or 'ejs' in g.lower():
+                all_eps.setdefault(g, []).append(ep.name)
+        _diag["all_yt_eps"] = all_eps
     except Exception as e3:
-        _diag["yt_dlp_plugins_eps"] = f"error: {e3}"
+        _diag["all_yt_eps"] = f"error: {e3}"
+    # yt_dlp_ejsの__init__内容確認
+    try:
+        attrs = [a for a in dir(yt_dlp_ejs) if not a.startswith('__')]
+        _diag["ejs_attrs"] = attrs
+    except Exception as e4:
+        _diag["ejs_attrs"] = f"error: {e4}"
 except Exception as e:
     _diag["ejs_error"] = f"{type(e).__name__}: {e}"
 print(f"[diag] ejs: {_diag}")
