@@ -56,9 +56,10 @@ def youtube_to_tempfile(youtube_url: str) -> str:
         "quiet": False,
         "verbose": True,
         "jsruntimes": [node_runtime],
-        "extractor_args": {"youtube": {"player_client": ["android"]}},
-        # cookiesはandroidクライアントと非互換のため外す。POTで認証を行う
+        "extractor_args": {"youtube": {"player_client": ["mweb"]}},
     }
+    if _cookies_file:
+        ydl_opts["cookiefile"] = _cookies_file
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.extract_info(youtube_url, download=True)
     return os.path.join(tmp_dir, "audio.wav")
