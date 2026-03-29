@@ -118,6 +118,7 @@ def run_whisper_job(job):
                     all_words.append({
                         "word": w.word.strip(),
                         "startMs": round(w.start * 1000),
+                        "endMs": round(w.end * 1000),
                     })
             else:
                 raw_words = seg.text.strip().split()
@@ -126,9 +127,12 @@ def run_whisper_job(job):
                 seg_start_ms = round(seg.start * 1000)
                 seg_dur_ms = round((seg.end - seg.start) * 1000)
                 for wi, w in enumerate(raw_words):
+                    word_start_ms = seg_start_ms + round(seg_dur_ms * wi / len(raw_words))
+                    word_end_ms = seg_start_ms + round(seg_dur_ms * (wi + 1) / len(raw_words))
                     all_words.append({
                         "word": w,
-                        "startMs": seg_start_ms + round(seg_dur_ms * wi / len(raw_words)),
+                        "startMs": word_start_ms,
+                        "endMs": word_end_ms,
                     })
 
     with rp_debugger.LineTimer('firebase_save_step'):
