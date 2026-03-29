@@ -88,7 +88,6 @@ def base64_to_tempfile(base64_file: str) -> str:
 
 def youtube_to_tempfile(youtube_url: str) -> str:
     tmp_dir = tempfile.mkdtemp()
-    node_runtime = f"node:{_node_path}" if _node_path else "node"
     ydl_opts = {
         "format": "bestaudio/best",
         "outtmpl": os.path.join(tmp_dir, "audio.%(ext)s"),
@@ -98,8 +97,7 @@ def youtube_to_tempfile(youtube_url: str) -> str:
         }],
         "quiet": False,
         "verbose": True,
-        "jsruntimes": [node_runtime],
-        "extractor_args": {"youtube": {"player_client": ["mweb"]}},
+        "js_runtimes": {"node": {"path": _node_path} if _node_path else {}},
     }
     if _cookies_file:
         ydl_opts["cookiefile"] = _cookies_file
