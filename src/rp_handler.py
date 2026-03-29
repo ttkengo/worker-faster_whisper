@@ -42,8 +42,8 @@ def youtube_to_tempfile(youtube_url: str) -> str:
             "key": "FFmpegExtractAudio",
             "preferredcodec": "wav",
         }],
-        "quiet": True,
-        "jsruntimes": ["node"],
+        "quiet": False,
+        "verbose": True,
     }
     if _cookies_file:
         ydl_opts["cookiefile"] = _cookies_file
