@@ -32,15 +32,26 @@ try:
     import yt_dlp_ejs
     import os as _os
     pkg_dir = _os.path.dirname(yt_dlp_ejs.__file__)
-    js_files = [f for f in _os.listdir(pkg_dir) if f.endswith('.js')]
+    # 全ファイルを再帰的に列挙
+    all_files = []
+    for root, dirs, files in _os.walk(pkg_dir):
+        for f in files:
+            all_files.append(_os.path.relpath(_os.path.join(root, f), pkg_dir))
     _diag["ejs_dir"] = pkg_dir
-    _diag["ejs_js_files"] = js_files
-    if js_files and _node_path:
-        script_path = _os.path.join(pkg_dir, js_files[0])
-        r = subprocess.run([_node_path, script_path], capture_output=True, text=True, timeout=10, input='test')
-        _diag["ejs_node_rc"] = r.returncode
-        _diag["ejs_node_out"] = r.stdout[:300]
-        _diag["ejs_node_err"] = r.stderr[:300]
+    _diag["ejs_all_files"] = all_files
+    # プラグインのスクリプトパス取得を試みる
+    try:
+        script_path = getattr(yt_dlp_ejs, 'SOLVER_SCRIPT', None) or getattr(yt_dlp_ejs, 'script_path', None)
+        _diag["ejs_script_path_attr"] = str(script_path)
+    except Exception as e2:
+        _diag["ejs_script_path_attr"] = f"error: {e2}"
+    # yt-dlp-ejsのentry_pointsを確認
+    try:
+        import importlib.metadata as _meta
+        eps = list(_meta.entry_points(group='yt_dlp_plugins'))
+        _diag["yt_dlp_plugins_eps"] = [str(e) for e in eps]
+    except Exception as e3:
+        _diag["yt_dlp_plugins_eps"] = f"error: {e3}"
 except Exception as e:
     _diag["ejs_error"] = f"{type(e).__name__}: {e}"
 print(f"[diag] ejs: {_diag}")
