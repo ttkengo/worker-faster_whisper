@@ -4,7 +4,6 @@ import os
 import atexit
 import json
 import shutil
-import subprocess
 import urllib.request
 import yt_dlp
 from rp_schema import INPUT_VALIDATIONS
@@ -16,56 +15,8 @@ import predict
 MODEL = predict.Predictor()
 MODEL.setup()
 
-# 診断情報をグローバルに収集（ジョブのエラーレスポンスに含める）
-_diag = {}
-
+# Node.jsパスを取得（js_runtimes設定に使用）
 _node_path = shutil.which("node") or shutil.which("nodejs")
-try:
-    _node_version = subprocess.check_output([_node_path or "node", "--version"], stderr=subprocess.DEVNULL).decode().strip() if _node_path else "not found"
-except Exception as e:
-    _node_version = f"error: {e}"
-_diag["node_path"] = _node_path
-_diag["node_version"] = _node_version
-print(f"[diag] Node.js: {_node_path} {_node_version}")
-
-try:
-    import yt_dlp_ejs
-    import os as _os
-    pkg_dir = _os.path.dirname(yt_dlp_ejs.__file__)
-    # 全ファイルを再帰的に列挙
-    all_files = []
-    for root, dirs, files in _os.walk(pkg_dir):
-        for f in files:
-            all_files.append(_os.path.relpath(_os.path.join(root, f), pkg_dir))
-    _diag["ejs_dir"] = pkg_dir
-    _diag["ejs_all_files"] = all_files
-    # core.min.jsをnodeで直接実行テスト
-    core_js = _os.path.join(pkg_dir, 'yt', 'solver', 'core.min.js')
-    if _node_path and _os.path.exists(core_js):
-        r = subprocess.run([_node_path, core_js], capture_output=True, text=True, timeout=10, input='test')
-        _diag["core_js_rc"] = r.returncode
-        _diag["core_js_out"] = r.stdout[:300]
-        _diag["core_js_err"] = r.stderr[:300]
-    # 全entry_pointsグループを確認
-    try:
-        import importlib.metadata as _meta
-        all_eps = {}
-        for ep in _meta.entry_points():
-            g = ep.group
-            if 'yt' in g.lower() or 'dlp' in g.lower() or 'ejs' in g.lower():
-                all_eps.setdefault(g, []).append(ep.name)
-        _diag["all_yt_eps"] = all_eps
-    except Exception as e3:
-        _diag["all_yt_eps"] = f"error: {e3}"
-    # yt_dlp_ejsの__init__内容確認
-    try:
-        attrs = [a for a in dir(yt_dlp_ejs) if not a.startswith('__')]
-        _diag["ejs_attrs"] = attrs
-    except Exception as e4:
-        _diag["ejs_attrs"] = f"error: {e4}"
-except Exception as e:
-    _diag["ejs_error"] = f"{type(e).__name__}: {e}"
-print(f"[diag] ejs: {_diag}")
 
 FIREBASE_API_KEY = os.environ.get("FIREBASE_API_KEY", "")
 FIREBASE_PROJECT = os.environ.get("FIREBASE_PROJECT", "")
@@ -95,8 +46,7 @@ def youtube_to_tempfile(youtube_url: str) -> str:
             "key": "FFmpegExtractAudio",
             "preferredcodec": "wav",
         }],
-        "quiet": False,
-        "verbose": True,
+        "quiet": True,
         "js_runtimes": {"node": {"path": _node_path} if _node_path else {}},
     }
     if _cookies_file:
@@ -146,10 +96,7 @@ def run_whisper_job(job):
         job_input = input_validation['validated_input']
 
     if job_input.get('youtube_url', False):
-        try:
-            audio_input = youtube_to_tempfile(job_input['youtube_url'])
-        except Exception as e:
-            return {"error": str(e), "diag": _diag}
+        audio_input = youtube_to_tempfile(job_input['youtube_url'])
     elif job_input.get('audio', False) and not job_input.get('audio_base64', False):
         with rp_debugger.LineTimer('download_step'):
             audio_input = download_files_from_urls(job['id'], [job_input['audio']])[0]
