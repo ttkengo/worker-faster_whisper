@@ -3,7 +3,9 @@ import tempfile
 import os
 import atexit
 import json
+import re
 import shutil
+import subprocess
 import urllib.request
 import yt_dlp
 from rp_schema import INPUT_VALIDATIONS
@@ -55,33 +57,50 @@ def youtube_to_tempfile(youtube_url: str) -> str:
         ydl.extract_info(youtube_url, download=True)
     return os.path.join(tmp_dir, "audio.wav")
 
-def save_all_words_to_firebase(video_id: str, all_words: list):
+def measure_lufs(audio_path: str):
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-nostats", "-i", audio_path,
+             "-filter_complex", "ebur128", "-f", "null", "/dev/null"],
+            capture_output=True, text=True
+        )
+        m = re.search(r'I:\s+([-\d.]+)\s+LUFS', result.stderr)
+        if m:
+            return float(m.group(1))
+    except Exception as e:
+        print(f"LUFS measurement error: {e}")
+    return None
+
+def save_all_words_to_firebase(video_id: str, all_words: list, integrated_loudness=None):
     if not FIREBASE_API_KEY or not FIREBASE_PROJECT:
         print("Firebase config not set, skipping save")
         return
+    mask = "updateMask.fieldPaths=allWords&updateMask.fieldPaths=fetchedAt"
+    if integrated_loudness is not None:
+        mask += "&updateMask.fieldPaths=integratedLoudness"
     url = (
         f"https://firestore.googleapis.com/v1/projects/{FIREBASE_PROJECT}"
         f"/databases/(default)/documents/transcripts/{video_id}"
-        f"?updateMask.fieldPaths=allWords&updateMask.fieldPaths=fetchedAt"
+        f"?{mask}"
         f"&key={FIREBASE_API_KEY}"
     )
     from datetime import datetime, timezone, timedelta
-    payload = json.dumps({
-        "fields": {
-            "allWords":  {"stringValue": json.dumps(all_words)},
-            "fetchedAt": {"stringValue": datetime.now(timezone(timedelta(hours=9))).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "+09:00"},
-        }
-    }).encode("utf-8")
+    fields = {
+        "allWords":  {"stringValue": json.dumps(all_words)},
+        "fetchedAt": {"stringValue": datetime.now(timezone(timedelta(hours=9))).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "+09:00"},
+    }
+    if integrated_loudness is not None:
+        fields["integratedLoudness"] = {"doubleValue": integrated_loudness}
+    payload = json.dumps({"fields": fields}).encode("utf-8")
     req = urllib.request.Request(url, data=payload, method="PATCH")
     req.add_header("Content-Type", "application/json")
     try:
         with urllib.request.urlopen(req) as res:
-            print(f"Firebase saved: {res.status}")
+            print(f"Firebase saved: {res.status}, LUFS={integrated_loudness}")
     except Exception as e:
         print(f"Firebase save error: {e}")
 
 def extract_video_id(youtube_url: str) -> str:
-    import re
     m = re.search(r'(?:v=|/embed/|/shorts/|youtu\.be/)([a-zA-Z0-9_-]{11})', youtube_url)
     return m.group(1) if m else None
 
@@ -104,6 +123,10 @@ def run_whisper_job(job):
         audio_input = base64_to_tempfile(job_input['audio_base64'])
     else:
         return {'error': 'Must provide youtube_url, audio, or audio_base64'}
+
+    with rp_debugger.LineTimer('lufs_step'):
+        integrated_loudness = measure_lufs(audio_input)
+        print(f"Measured LUFS: {integrated_loudness}")
 
     with rp_debugger.LineTimer('transcription_step'):
         trans_result = MODEL.predict(
@@ -158,7 +181,7 @@ def run_whisper_job(job):
         youtube_url = job_input.get('youtube_url', '')
         video_id = extract_video_id(youtube_url) if youtube_url else None
         if video_id:
-            save_all_words_to_firebase(video_id, all_words)
+            save_all_words_to_firebase(video_id, all_words, integrated_loudness)
 
     with rp_debugger.LineTimer('cleanup_step'):
         rp_cleanup.clean(['input_objects'])
@@ -167,6 +190,7 @@ def run_whisper_job(job):
         "allWords": all_words,
         "detected_language": trans_result["detected_language"],
         "word_count": len(all_words),
+        "integratedLoudness": integrated_loudness,
     }
 
 runpod.serverless.start({"handler": run_whisper_job})
