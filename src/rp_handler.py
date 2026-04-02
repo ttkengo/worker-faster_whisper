@@ -5,7 +5,6 @@ import atexit
 import json
 import re
 import shutil
-import subprocess
 import urllib.request
 import soundfile as sf
 import pyloudnorm as pyln
@@ -65,26 +64,6 @@ def youtube_to_tempfile(youtube_url: str) -> str:
     if not exists or size == 0:
         print(f"[youtube_to_tempfile] WARNING: audio file missing or empty after download")
     return out_path
-
-def measure_lufs(audio_path: str) -> float | None:
-    """ffmpeg ebur128 フィルターで LUFS を計測"""
-    try:
-        result = subprocess.run(
-            ["ffmpeg", "-nostats", "-i", audio_path,
-             "-filter_complex", "ebur128", "-f", "null", "/dev/null"],
-            capture_output=True, text=True
-        )
-        m = re.search(r'I:\s+([-\d.]+)\s+LUFS', result.stderr)
-        if m:
-            val = float(m.group(1))
-            print(f"[measure_lufs] ffmpeg LUFS={val}")
-            return val
-        else:
-            print(f"[measure_lufs] WARNING: LUFS pattern not found in ffmpeg output")
-            print(f"[measure_lufs] ffmpeg stderr tail: {result.stderr[-500:]}")
-    except Exception as e:
-        print(f"[measure_lufs] ERROR: {e}")
-    return None
 
 def calculate_lufs(audio_path: str) -> float | None:
     """pyloudnorm (ITU-R BS.1770) で LUFS を計測 + 診断ログ"""
@@ -166,10 +145,8 @@ def run_whisper_job(job):
     print(f"[run_whisper_job] audio_input={audio_input} size={audio_size} bytes")
 
     with rp_debugger.LineTimer('lufs_step'):
-        lufs_ffmpeg = measure_lufs(audio_input)
-        lufs_pyloud = calculate_lufs(audio_input)
-        integrated_loudness = lufs_pyloud
-        print(f"[run_whisper_job] LUFS summary: ffmpeg={lufs_ffmpeg} pyloudnorm={lufs_pyloud}")
+        integrated_loudness = calculate_lufs(audio_input)
+        print(f"[run_whisper_job] LUFS={integrated_loudness}")
 
     with rp_debugger.LineTimer('transcription_step'):
         trans_result = MODEL.predict(
