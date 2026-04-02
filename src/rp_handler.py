@@ -3,10 +3,13 @@ import tempfile
 import os
 import atexit
 import json
+import re
 import shutil
+import subprocess
 import urllib.request
 import soundfile as sf
 import pyloudnorm as pyln
+import numpy as np
 import yt_dlp
 from rp_schema import INPUT_VALIDATIONS
 from runpod.serverless.utils import download_files_from_urls, rp_cleanup, rp_debugger
@@ -63,7 +66,50 @@ def youtube_to_tempfile(youtube_url: str) -> str:
         print(f"[youtube_to_tempfile] WARNING: audio file missing or empty after download")
     return out_path
 
-def save_all_words_to_firebase(video_id: str, all_words: list, integrated_loudness: float | None = None):
+def measure_lufs(audio_path: str) -> float | None:
+    """ffmpeg ebur128 フィルターで LUFS を計測"""
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-nostats", "-i", audio_path,
+             "-filter_complex", "ebur128", "-f", "null", "/dev/null"],
+            capture_output=True, text=True
+        )
+        m = re.search(r'I:\s+([-\d.]+)\s+LUFS', result.stderr)
+        if m:
+            val = float(m.group(1))
+            print(f"[measure_lufs] ffmpeg LUFS={val}")
+            return val
+        else:
+            print(f"[measure_lufs] WARNING: LUFS pattern not found in ffmpeg output")
+            print(f"[measure_lufs] ffmpeg stderr tail: {result.stderr[-500:]}")
+    except Exception as e:
+        print(f"[measure_lufs] ERROR: {e}")
+    return None
+
+def calculate_lufs(audio_path: str) -> float | None:
+    """pyloudnorm (ITU-R BS.1770) で LUFS を計測 + 診断ログ"""
+    try:
+        file_size = os.path.getsize(audio_path) if os.path.exists(audio_path) else 0
+        print(f"[calculate_lufs] path={audio_path} file_size={file_size} bytes")
+        data, rate = sf.read(audio_path)
+        duration_sec = len(data) / rate if rate > 0 else 0
+        channels = 1 if data.ndim == 1 else data.shape[1]
+        max_amp = float(np.max(np.abs(data)))
+        rms = float(np.sqrt(np.mean(data ** 2)))
+        print(f"[calculate_lufs] rate={rate}Hz duration={duration_sec:.2f}s channels={channels} max_amp={max_amp:.6f} rms={rms:.6f}")
+        if max_amp < 1e-6:
+            print(f"[calculate_lufs] WARNING: audio is essentially silent (max_amp < 1e-6)")
+        if duration_sec < 0.4:
+            print(f"[calculate_lufs] WARNING: duration {duration_sec:.3f}s < 0.4s (BS.1770 requires >= 400ms)")
+        meter = pyln.Meter(rate)
+        loudness = meter.integrated_loudness(data)
+        print(f"[calculate_lufs] pyloudnorm LUFS={loudness:.2f}")
+        return round(loudness, 2)
+    except Exception as e:
+        print(f"[calculate_lufs] ERROR: {e}")
+        return None
+
+def save_all_words_to_firebase(video_id: str, all_words: list, integrated_loudness=None):
     if not FIREBASE_API_KEY or not FIREBASE_PROJECT:
         print("Firebase config not set, skipping save")
         return
@@ -88,35 +134,11 @@ def save_all_words_to_firebase(video_id: str, all_words: list, integrated_loudne
     req.add_header("Content-Type", "application/json")
     try:
         with urllib.request.urlopen(req) as res:
-            print(f"Firebase saved: {res.status}")
+            print(f"Firebase saved: {res.status}, LUFS={integrated_loudness}")
     except Exception as e:
         print(f"Firebase save error: {e}")
 
-def calculate_lufs(audio_path: str) -> float | None:
-    try:
-        import numpy as np
-        file_size = os.path.getsize(audio_path) if os.path.exists(audio_path) else 0
-        print(f"[calculate_lufs] path={audio_path} file_size={file_size} bytes")
-        data, rate = sf.read(audio_path)
-        duration_sec = len(data) / rate if rate > 0 else 0
-        channels = data.ndim if data.ndim == 1 else data.shape[1]
-        max_amp = float(np.max(np.abs(data)))
-        rms = float(np.sqrt(np.mean(data ** 2)))
-        print(f"[calculate_lufs] rate={rate}Hz duration={duration_sec:.2f}s channels={channels} max_amp={max_amp:.6f} rms={rms:.6f}")
-        if max_amp < 1e-6:
-            print(f"[calculate_lufs] WARNING: audio is essentially silent (max_amp < 1e-6)")
-        if duration_sec < 0.4:
-            print(f"[calculate_lufs] WARNING: duration {duration_sec:.3f}s < 0.4s (BS.1770 requires >= 400ms)")
-        meter = pyln.Meter(rate)  # ITU-R BS.1770
-        loudness = meter.integrated_loudness(data)
-        print(f"[calculate_lufs] LUFS={loudness:.2f}")
-        return round(loudness, 2)
-    except Exception as e:
-        print(f"[calculate_lufs] ERROR: {e}")
-        return None
-
 def extract_video_id(youtube_url: str) -> str:
-    import re
     m = re.search(r'(?:v=|/embed/|/shorts/|youtu\.be/)([a-zA-Z0-9_-]{11})', youtube_url)
     return m.group(1) if m else None
 
@@ -142,6 +164,12 @@ def run_whisper_job(job):
 
     audio_size = os.path.getsize(audio_input) if os.path.exists(audio_input) else 0
     print(f"[run_whisper_job] audio_input={audio_input} size={audio_size} bytes")
+
+    with rp_debugger.LineTimer('lufs_step'):
+        lufs_ffmpeg = measure_lufs(audio_input)
+        lufs_pyloud = calculate_lufs(audio_input)
+        integrated_loudness = lufs_pyloud
+        print(f"[run_whisper_job] LUFS summary: ffmpeg={lufs_ffmpeg} pyloudnorm={lufs_pyloud}")
 
     with rp_debugger.LineTimer('transcription_step'):
         trans_result = MODEL.predict(
@@ -192,9 +220,6 @@ def run_whisper_job(job):
                         "endMs": word_end_ms,
                     })
 
-    with rp_debugger.LineTimer('lufs_step'):
-        integrated_loudness = calculate_lufs(audio_input)
-
     with rp_debugger.LineTimer('firebase_save_step'):
         youtube_url = job_input.get('youtube_url', '')
         video_id = extract_video_id(youtube_url) if youtube_url else None
@@ -208,6 +233,7 @@ def run_whisper_job(job):
         "allWords": all_words,
         "detected_language": trans_result["detected_language"],
         "word_count": len(all_words),
+        "integratedLoudness": integrated_loudness,
     }
 
 runpod.serverless.start({"handler": run_whisper_job})
