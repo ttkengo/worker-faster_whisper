@@ -5,6 +5,8 @@ import atexit
 import json
 import shutil
 import urllib.request
+import soundfile as sf
+import pyloudnorm as pyln
 import yt_dlp
 from rp_schema import INPUT_VALIDATIONS
 from runpod.serverless.utils import download_files_from_urls, rp_cleanup, rp_debugger
@@ -53,25 +55,35 @@ def youtube_to_tempfile(youtube_url: str) -> str:
         ydl_opts["cookiefile"] = _cookies_file
     with yt_dlp.YoutubeDL(ydl_opts) as ydl:
         ydl.extract_info(youtube_url, download=True)
-    return os.path.join(tmp_dir, "audio.wav")
+    out_path = os.path.join(tmp_dir, "audio.wav")
+    exists = os.path.exists(out_path)
+    size   = os.path.getsize(out_path) if exists else 0
+    print(f"[youtube_to_tempfile] exists={exists} size={size} bytes path={out_path}")
+    if not exists or size == 0:
+        print(f"[youtube_to_tempfile] WARNING: audio file missing or empty after download")
+    return out_path
 
-def save_all_words_to_firebase(video_id: str, all_words: list):
+def save_all_words_to_firebase(video_id: str, all_words: list, integrated_loudness: float | None = None):
     if not FIREBASE_API_KEY or not FIREBASE_PROJECT:
         print("Firebase config not set, skipping save")
         return
+    mask = "updateMask.fieldPaths=allWords&updateMask.fieldPaths=fetchedAt"
+    if integrated_loudness is not None:
+        mask += "&updateMask.fieldPaths=integratedLoudness"
     url = (
         f"https://firestore.googleapis.com/v1/projects/{FIREBASE_PROJECT}"
         f"/databases/(default)/documents/transcripts/{video_id}"
-        f"?updateMask.fieldPaths=allWords&updateMask.fieldPaths=fetchedAt"
+        f"?{mask}"
         f"&key={FIREBASE_API_KEY}"
     )
     from datetime import datetime, timezone, timedelta
-    payload = json.dumps({
-        "fields": {
-            "allWords":  {"stringValue": json.dumps(all_words)},
-            "fetchedAt": {"stringValue": datetime.now(timezone(timedelta(hours=9))).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "+09:00"},
-        }
-    }).encode("utf-8")
+    fields = {
+        "allWords":  {"stringValue": json.dumps(all_words)},
+        "fetchedAt": {"stringValue": datetime.now(timezone(timedelta(hours=9))).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "+09:00"},
+    }
+    if integrated_loudness is not None:
+        fields["integratedLoudness"] = {"doubleValue": integrated_loudness}
+    payload = json.dumps({"fields": fields}).encode("utf-8")
     req = urllib.request.Request(url, data=payload, method="PATCH")
     req.add_header("Content-Type", "application/json")
     try:
@@ -79,6 +91,29 @@ def save_all_words_to_firebase(video_id: str, all_words: list):
             print(f"Firebase saved: {res.status}")
     except Exception as e:
         print(f"Firebase save error: {e}")
+
+def calculate_lufs(audio_path: str) -> float | None:
+    try:
+        import numpy as np
+        file_size = os.path.getsize(audio_path) if os.path.exists(audio_path) else 0
+        print(f"[calculate_lufs] path={audio_path} file_size={file_size} bytes")
+        data, rate = sf.read(audio_path)
+        duration_sec = len(data) / rate if rate > 0 else 0
+        channels = data.ndim if data.ndim == 1 else data.shape[1]
+        max_amp = float(np.max(np.abs(data)))
+        rms = float(np.sqrt(np.mean(data ** 2)))
+        print(f"[calculate_lufs] rate={rate}Hz duration={duration_sec:.2f}s channels={channels} max_amp={max_amp:.6f} rms={rms:.6f}")
+        if max_amp < 1e-6:
+            print(f"[calculate_lufs] WARNING: audio is essentially silent (max_amp < 1e-6)")
+        if duration_sec < 0.4:
+            print(f"[calculate_lufs] WARNING: duration {duration_sec:.3f}s < 0.4s (BS.1770 requires >= 400ms)")
+        meter = pyln.Meter(rate)  # ITU-R BS.1770
+        loudness = meter.integrated_loudness(data)
+        print(f"[calculate_lufs] LUFS={loudness:.2f}")
+        return round(loudness, 2)
+    except Exception as e:
+        print(f"[calculate_lufs] ERROR: {e}")
+        return None
 
 def extract_video_id(youtube_url: str) -> str:
     import re
@@ -104,6 +139,9 @@ def run_whisper_job(job):
         audio_input = base64_to_tempfile(job_input['audio_base64'])
     else:
         return {'error': 'Must provide youtube_url, audio, or audio_base64'}
+
+    audio_size = os.path.getsize(audio_input) if os.path.exists(audio_input) else 0
+    print(f"[run_whisper_job] audio_input={audio_input} size={audio_size} bytes")
 
     with rp_debugger.LineTimer('transcription_step'):
         trans_result = MODEL.predict(
@@ -154,11 +192,14 @@ def run_whisper_job(job):
                         "endMs": word_end_ms,
                     })
 
+    with rp_debugger.LineTimer('lufs_step'):
+        integrated_loudness = calculate_lufs(audio_input)
+
     with rp_debugger.LineTimer('firebase_save_step'):
         youtube_url = job_input.get('youtube_url', '')
         video_id = extract_video_id(youtube_url) if youtube_url else None
         if video_id:
-            save_all_words_to_firebase(video_id, all_words)
+            save_all_words_to_firebase(video_id, all_words, integrated_loudness)
 
     with rp_debugger.LineTimer('cleanup_step'):
         rp_cleanup.clean(['input_objects'])
